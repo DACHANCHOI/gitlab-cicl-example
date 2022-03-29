@@ -1,0 +1,37 @@
+# Simple example of CI to build a Docker container and push it to Amazon ECR
+variables:
+  DOCKER_REGISTRY: ${AWS_ACCOUNT_ID}.dkr.ecr.ap-northeast-2.amazonaws.com
+  APP_NAME: dev-gitlab-pipeline-demo
+  AWS_DEFAULT_REGION: ap-northeast-2
+  TASK_DEFINITION_NAME: ap-dev-gitlab-ecs-task
+  CLUSTER_NAME: ap-dev-ecs-cluster
+  SERVICE_NAME: gitlab-ecs-service
+  REPOSITORY_URL: $DOCKER_REGISTRY/$APP_NAME
+  EXECUTION_ROLE_ARN: arn:aws:iam::${AWS_ACCOUNT_ID}:role/ecsTaskExecutionRole
+  IMAGE_TAG: $CI_PIPELINE_IID
+stages:
+  - build
+  - deploy
+
+build:
+  stage: build
+  before_script:
+    - aws ecr get-login-password | docker login --username AWS --password-stdin $DOCKER_REGISTRY
+    - aws --version
+    - docker info
+    - docker --version
+  script:
+    - docker build -t $DOCKER_REGISTRY/$APP_NAME:$IMAGE_TAG .
+    - docker tag $REPOSITORY_URL:$IMAGE_TAG $REPOSITORY_URL:latest
+    - docker push $REPOSITORY_URL:$IMAGE_TAG
+    - docker push $REPOSITORY_URL:latest
+deploy:
+  stage: deploy
+  script:
+    - echo $REPOSITORY_URL:$IMAGE_TAG
+    - TASK_DEFINITION=$(aws ecs describe-task-definition --task-definition "$TASK_DEFINITION_NAME" --region "${AWS_DEFAULT_REGION}")
+    - NEW_CONTAINER_DEFINTIION=$(echo $TASK_DEFINITION | jq --arg IMAGE "$REPOSITORY_URL:$IMAGE_TAG" '.taskDefinition.containerDefinitions[0].image = $IMAGE | .taskDefinition.containerDefinitions[0]')
+    - echo "Registering new container definition..."
+    - aws ecs register-task-definition --region "${AWS_DEFAULT_REGION}" --family "${TASK_DEFINITION_NAME}"  --container-definitions "${NEW_CONTAINER_DEFINTIION}" --cpu 256 --memory 512 --requires-compatibilities FARGATE --network-mode awsvpc --execution-role-arn $EXECUTION_ROLE_ARN
+    - echo "Updating the service..."
+    - aws ecs update-service --region "${AWS_DEFAULT_REGION}" --cluster "${CLUSTER_NAME}" --service "${SERVICE_NAME}"  --task-definition "${TASK_DEFINITION_NAME}"
